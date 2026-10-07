@@ -31,10 +31,13 @@ export async function POST(request: Request) {
       INNER JOIN public.auth_password ap
         ON ap.user_id = au.id
 
-      INNER JOIN public.rbac_user_role rur
+      LEFT JOIN public.rbac_user_role rur
         ON rur.user_id = au.id
 
       WHERE LOWER(au.email) = LOWER($1)
+        AND au.deactivated_at IS NULL
+      ORDER BY rur.role_id NULLS LAST
+      LIMIT 1
       `,
       [email],
     );
@@ -106,6 +109,7 @@ export async function POST(request: Request) {
     response.cookies.set("session_token", token, {
       httpOnly: true,
       sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
       path: "/",
       maxAge: 60 * 60 * 24 * 7,
     });
@@ -116,7 +120,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json(
       {
-        message: error.message,
+        message: "Login failed",
       },
       {
         status: 500,

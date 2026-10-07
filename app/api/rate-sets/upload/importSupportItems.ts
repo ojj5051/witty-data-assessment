@@ -1,4 +1,4 @@
-import { pool } from "@/lib/db";
+import type { QueryClient } from "@/lib/db";
 
 const attributeColumns: Record<string, string> = {
   IS_QUOTE_REQUIRED: "Quote",
@@ -9,19 +9,19 @@ const attributeColumns: Record<string, string> = {
 };
 
 export async function importSupportItems(
-  rate_set_id: string,
-  data: any[],
+  client: QueryClient,
+  rateSetId: string,
+  data: Record<string, unknown>[],
   categoryMap: Map<string, number>,
 ) {
-  const attributes = await pool.query(
+  const attributes = await client.query(
     `
     SELECT code
     FROM rate_set_support_item_attribute_type
     `,
   );
 
-  const supportItemMap = new Map();
-
+  const supportItemMap = new Map<unknown, unknown>();
   let sorting = 1;
 
   for (const row of data) {
@@ -29,70 +29,33 @@ export async function importSupportItems(
       String(row["Support Category Number (PACE)"]),
     );
 
-    if (!categoryId) continue;
+    if (!categoryId || supportItemMap.has(row["Support Item Number"])) continue;
 
-    const existing = await pool.query(
+    const result = await client.query(
       `
-  SELECT id
-  FROM rate_set_support_item
-  WHERE rate_set_id = $1
-  AND item_number = $2
-  `,
-      [rate_set_id, row["Support Item Number"]],
+      INSERT INTO rate_set_support_item
+      (
+        rate_set_id,
+        category_id,
+        item_number,
+        item_name,
+        unit,
+        sorting
+      )
+      VALUES ($1,$2,$3,$4,$5,$6)
+      RETURNING id
+      `,
+      [
+        rateSetId,
+        categoryId,
+        row["Support Item Number"],
+        row["Support Item Name"],
+        row["Unit"],
+        sorting,
+      ],
     );
 
-    let supportItemId;
-
-    if (existing.rowCount) {
-      supportItemId = existing.rows[0].id;
-
-      await pool.query(
-        `
-    UPDATE rate_set_support_item
-    SET
-      category_id = $1,
-      item_name = $2,
-      unit = $3,
-      sorting = $4,
-      updated_at = NOW()
-    WHERE id = $5
-    `,
-        [
-          categoryId,
-          row["Support Item Name"],
-          row["Unit"],
-          sorting,
-          supportItemId,
-        ],
-      );
-    } else {
-      const result = await pool.query(
-        `
-    INSERT INTO rate_set_support_item
-    (
-      rate_set_id,
-      category_id,
-      item_number,
-      item_name,
-      unit,
-      sorting
-    )
-    VALUES ($1,$2,$3,$4,$5,$6)
-    RETURNING id
-    `,
-        [
-          rate_set_id,
-          categoryId,
-          row["Support Item Number"],
-          row["Support Item Name"],
-          row["Unit"],
-          sorting,
-        ],
-      );
-
-      supportItemId = result.rows[0].id;
-    }
-
+    const supportItemId = result.rows[0].id;
     supportItemMap.set(row["Support Item Number"], supportItemId);
 
     for (const attribute of attributes.rows) {
@@ -100,25 +63,33 @@ export async function importSupportItems(
 
       if (!column) continue;
 
-      const value = ["yes", "y"].includes(String(row[column]).toLowerCase());
+      const value = ["yes", "y"].includes(
+        String(row[column] ?? "").toLowerCase(),
+      );
 
-      await pool.query(
+      await client.query(
         `
-    INSERT INTO rate_set_support_item_attribute
-    (
-      support_item_id,
-      attribute_code,
-      value
-    )
-    VALUES ($1,$2,$3)
-    ON CONFLICT (support_item_id, attribute_code)
-    DO UPDATE SET value = EXCLUDED.value
-    `,
+        INSERT INTO rate_set_support_item_attribute
+        (
+          support_item_id,
+          attribute_code,
+          value
+        )
+        VALUES ($1,$2,$3)
+        ON CONFLICT (support_item_id, attribute_code)
+        DO UPDATE SET value = EXCLUDED.value
+        `,
         [supportItemId, attribute.code, value],
       );
     }
 
     sorting++;
+  }
+
+  if (supportItemMap.size === 0) {
+    throw new Error(
+      "No support items found. Check the Excel column headers.",
+    );
   }
 
   return supportItemMap;

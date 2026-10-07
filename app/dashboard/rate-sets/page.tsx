@@ -121,15 +121,20 @@ export default function RateSetsPage() {
 
   const handleCreateRateSet = async (values: any) => {
     try {
-      const result = await createRateSet(values);
+      const result = await createRateSet({
+        ...values,
+        start_date: values.start_date?.format?.("YYYY-MM-DD") ?? values.start_date,
+        end_date: values.end_date?.format?.("YYYY-MM-DD") ?? values.end_date,
+      });
       await handleUpload(result.id);
 
       loadRateSets();
 
       message.success("Rate set created successfully.");
     } catch (error: any) {
-      console.log(error.message);
+      console.error(error);
       message.error(error.message || "Something went wrong.");
+      throw error;
     }
   };
 

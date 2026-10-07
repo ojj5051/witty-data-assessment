@@ -24,15 +24,62 @@ import {
 import { getInvoiceItems } from "@/services/invoices.service";
 import dayjs, { Dayjs } from "dayjs";
 
+function regionPrice(
+  prices: Record<string, unknown> | null | undefined,
+  region: string | null,
+) {
+  if (!prices || !region || prices[region] == null || prices[region] === "") {
+    return null;
+  }
+
+  const number = Number(prices[region]);
+  return Number.isFinite(number) ? number : null;
+}
+
+function lineAmount(unit: unknown, rate: unknown) {
+  const value = (Number(unit) || 0) * (Number(rate) || 0);
+  return Math.round(value * 100) / 100;
+}
+
+function syncAmounts(form: {
+  getFieldValue: (name: unknown) => any;
+  setFieldValue: (name: unknown, value: unknown) => void;
+}) {
+  const items = form.getFieldValue("items") || [];
+  let total = 0;
+
+  items.forEach((item: any, index: number) => {
+    const amount = lineAmount(item?.unit, item?.input_rate);
+    form.setFieldValue(["items", index, "amount"], amount);
+    total += amount;
+  });
+
+  form.setFieldValue("amount", Math.round(total * 100) / 100);
+}
+
+function asDate(value: any) {
+  if (value && typeof value.format === "function") {
+    return value.format("YYYY-MM-DD");
+  }
+
+  return value;
+}
+
 interface InvoiceItem {
   id: number;
+}
+
+interface ParticipantOption {
+  label: string;
+  value: string;
+  pricingRegion: string | null;
 }
 
 interface InvoiceDrawerProps {
   title: string;
   open: boolean;
   setOpen: (value: boolean) => void;
-  onSubmit: (values: any, id?: string) => void;
+  onSubmit: (values: any, id?: string) => void | Promise<void>;
   data?: any;
   setIsEdit?: (value: boolean) => void;
 }
@@ -54,8 +101,13 @@ export default function InvoiceFormDrawer({
     Record<number, any[]>
   >({});
 
-  const [participantsDropdown, setParticipantsDropdown] = useState([]);
+  const [participantsDropdown, setParticipantsDropdown] = useState<
+    ParticipantOption[]
+  >([]);
   const [providersDropdown, setProvidersDropdown] = useState([]);
+  const [participantRegion, setParticipantRegion] = useState<string | null>(
+    null,
+  );
 
   const handleGetInvoiceItems = async (
     index: number,
@@ -64,8 +116,8 @@ export default function InvoiceFormDrawer({
   ) => {
     try {
       const result = await getInvoiceItems(
-        startDate.format("DD/MM/YYYY"),
-        endDate.format("DD/MM/YYYY"),
+        startDate.format("YYYY-MM-DD"),
+        endDate.format("YYYY-MM-DD"),
       );
 
       setInvoiceItemsByRow((prev) => ({
@@ -84,32 +136,46 @@ export default function InvoiceFormDrawer({
     if (!data) return;
 
     form.setFieldsValue(data);
-    setItems(data.items);
+    setItems(data.items ?? []);
 
-    data.items.forEach(async (item: any, index: number) => {
+    data.items?.forEach(async (item: any, index: number) => {
       if (!item.start_date || !item.end_date) return;
 
-      const rowInvoiceItems = await handleGetInvoiceItems(
-        index,
-        item.start_date,
-        item.end_date,
-      );
-
-      const supportItem = rowInvoiceItems.find(
-        (invoiceItem: any) => invoiceItem.id === item.support_item_id,
-      );
-
-      if (supportItem) {
-        const maxRate = Math.max(
-          ...Object.values(supportItem.prices)
-            .filter((price) => price != null)
-            .map(Number),
-        );
-
-        form.setFieldValue(["items", index, "max_rate"], maxRate);
-      }
+      await handleGetInvoiceItems(index, item.start_date, item.end_date);
     });
   }, [data]);
+
+  useEffect(() => {
+    if (!data?.client_id || participantsDropdown.length === 0) return;
+
+    const selected = participantsDropdown.find(
+      (participant) => participant.value === data.client_id,
+    );
+
+    if (selected) {
+      setParticipantRegion(selected.pricingRegion);
+    }
+  }, [data, participantsDropdown]);
+
+  useEffect(() => {
+    if (!participantRegion) return;
+
+    Object.entries(invoiceItemsByRow).forEach(([index, rows]) => {
+      const supportId = form.getFieldValue([
+        "items",
+        Number(index),
+        "support_item_id",
+      ]);
+      const supportItem = rows.find((row) => row.id === supportId);
+
+      if (!supportItem) return;
+
+      form.setFieldValue(
+        ["items", Number(index), "max_rate"],
+        regionPrice(supportItem.prices, participantRegion),
+      );
+    });
+  }, [participantRegion, invoiceItemsByRow, form]);
 
   useEffect(() => {
     const loadDropdown = async () => {
@@ -121,6 +187,7 @@ export default function InvoiceFormDrawer({
           (participant: any) => ({
             label: participant.name,
             value: participant.id,
+            pricingRegion: participant.pricing_region ?? null,
           }),
         );
 
@@ -132,15 +199,15 @@ export default function InvoiceFormDrawer({
         setParticipantsDropdown(participantOptions);
         setProvidersDropdown(providerOptions);
       } catch (error: any) {
-        console.error(error.response.data.message);
+        console.error(error);
       }
     };
 
     loadDropdown();
   }, []);
 
-  const handleSubmit = (values: any, drafted = false) => {
-    const updatedItems = values.items.map((item: any, index: number) => {
+  const handleSubmit = async (values: any, drafted = false) => {
+    const updatedItems = (values.items ?? []).map((item: any, index: number) => {
       const rowInvoiceItems = invoiceItemsByRow[index] || [];
 
       const supportItem = rowInvoiceItems.find(
@@ -149,23 +216,30 @@ export default function InvoiceFormDrawer({
 
       return {
         ...item,
+        start_date: asDate(item.start_date),
+        end_date: asDate(item.end_date),
         rate_set_id: supportItem?.rate_set_id ?? null,
       };
     });
 
     const payload = {
       ...values,
+      invoice_date: asDate(values.invoice_date),
       items: updatedItems,
       status: drafted ? "draft" : "completed",
     };
 
-    if (data?.id) {
-      onSubmit(payload, data.id);
-    } else {
-      onSubmit(payload);
-    }
+    try {
+      if (data?.id) {
+        await onSubmit(payload, data.id);
+      } else {
+        await onSubmit(payload);
+      }
 
-    closeDrawer();
+      closeDrawer();
+    } catch (error) {
+      console.error(error);
+    }
   };
 
   const closeDrawer = () => {
@@ -184,7 +258,30 @@ export default function InvoiceFormDrawer({
   };
 
   const removeItem = (id: number) => {
+    const index = items.findIndex((item) => item.id === id);
+    if (index < 0) return;
+
+    const currentItems = form.getFieldValue("items") || [];
+    form.setFieldValue(
+      "items",
+      currentItems.filter((_: unknown, itemIndex: number) => itemIndex !== index),
+    );
+
+    setInvoiceItemsByRow((prev) => {
+      const next: Record<number, any[]> = {};
+      let nextIndex = 0;
+
+      for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+        if (itemIndex === index) continue;
+        next[nextIndex] = prev[itemIndex] || [];
+        nextIndex++;
+      }
+
+      return next;
+    });
+
     setItems(items.filter((item) => item.id !== id));
+    syncAmounts(form);
   };
 
   const duplicateItem = (id: number) => {
@@ -208,6 +305,8 @@ export default function InvoiceFormDrawer({
       ...prev,
       [items.length]: prev[index] || [],
     }));
+
+    syncAmounts(form);
   };
 
   return (
@@ -264,6 +363,12 @@ export default function InvoiceFormDrawer({
                   allowClear
                   placeholder="Select"
                   options={participantsDropdown}
+                  onChange={(value) => {
+                    const selected = participantsDropdown.find(
+                      (participant) => participant.value === value,
+                    );
+                    setParticipantRegion(selected?.pricingRegion ?? null);
+                  }}
                 />
               </Form.Item>
 
@@ -481,18 +586,15 @@ export default function InvoiceFormDrawer({
                               (item: any) => item.id === value,
                             );
 
-                            if (supportItem) {
-                              const maxRate = Math.max(
-                                ...Object.values(supportItem.prices)
-                                  .filter((price) => price != null)
-                                  .map(Number),
-                              );
-
-                              form.setFieldValue(
-                                ["items", index, "max_rate"],
-                                maxRate,
-                              );
-                            }
+                            form.setFieldValue(
+                              ["items", index, "max_rate"],
+                              supportItem
+                                ? regionPrice(
+                                    supportItem.prices,
+                                    participantRegion,
+                                  )
+                                : null,
+                            );
                           }}
                         />
                       </Form.Item>
@@ -516,22 +618,11 @@ export default function InvoiceFormDrawer({
                       >
                         <Input
                           onChange={(e) => {
-                            const unit = Number(e.target.value) || 0;
-                            const inputRate =
-                              Number(
-                                form.getFieldValue([
-                                  "items",
-                                  index,
-                                  "input_rate",
-                                ]),
-                              ) || 0;
-
                             form.setFieldValue(
-                              ["items", index, "amount"],
-                              unit * inputRate,
+                              ["items", index, "unit"],
+                              e.target.value,
                             );
-
-                            form.setFieldValue("amount", unit * inputRate);
+                            syncAmounts(form);
                           }}
                         />
                       </Form.Item>
@@ -544,22 +635,50 @@ export default function InvoiceFormDrawer({
                             required: true,
                             message: "Required",
                           },
+                          {
+                            validator(_, value) {
+                              if (value === undefined || value === null || value === "") {
+                                return Promise.resolve();
+                              }
+
+                              const maxRate = form.getFieldValue([
+                                "items",
+                                index,
+                                "max_rate",
+                              ]);
+
+                              if (
+                                maxRate === undefined ||
+                                maxRate === null ||
+                                maxRate === ""
+                              ) {
+                                return Promise.reject(
+                                  new Error(
+                                    "No price guide rate for this participant's region",
+                                  ),
+                                );
+                              }
+
+                              if (Number(value) > Number(maxRate)) {
+                                return Promise.reject(
+                                  new Error(
+                                    "Invoice rate cannot exceed the price guide rate",
+                                  ),
+                                );
+                              }
+
+                              return Promise.resolve();
+                            },
+                          },
                         ]}
                       >
                         <Input
                           onChange={(e) => {
-                            const inputRate = Number(e.target.value) || 0;
-                            const unit =
-                              Number(
-                                form.getFieldValue(["items", index, "unit"]),
-                              ) || 0;
-
                             form.setFieldValue(
-                              ["items", index, "amount"],
-                              unit * inputRate,
+                              ["items", index, "input_rate"],
+                              e.target.value,
                             );
-
-                            form.setFieldValue("amount", unit * inputRate);
+                            syncAmounts(form);
                           }}
                         />
                       </Form.Item>

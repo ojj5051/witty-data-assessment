@@ -1,12 +1,23 @@
 import { pool } from "@/lib/db";
 import { NextResponse } from "next/server";
+import { requireUser } from "@/lib/auth";
 
 export async function GET(request: Request) {
+  const session = await requireUser();
+  if (session instanceof NextResponse) return session;
+
   try {
     const { searchParams } = new URL(request.url);
 
     const startDate = searchParams.get("start_date");
     const endDate = searchParams.get("end_date");
+
+    if (!startDate || !endDate) {
+      return NextResponse.json(
+        { message: "Start date and end date are required" },
+        { status: 400 },
+      );
+    }
 
     const result = await pool.query(
       `SELECT
@@ -42,8 +53,8 @@ export async function GET(request: Request) {
         ON rssip.support_item_id = rssi.id
         AND rssip.rate_set_id = rs.id
 
-      WHERE rs.start_date <= $1
-        AND rs.end_date >= $2
+      WHERE rs.start_date <= $1::date
+        AND rs.end_date >= $2::date
 
       GROUP BY
         rs.id,
@@ -72,9 +83,9 @@ export async function GET(request: Request) {
   } catch (error) {
     console.error("Failed to fetch rate set support items:", error);
 
-   return NextResponse.json(
+    return NextResponse.json(
       {
-        message: error.message,
+        message: "Failed to fetch rate set support items",
       },
       {
         status: 500,

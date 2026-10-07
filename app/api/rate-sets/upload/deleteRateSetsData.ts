@@ -1,7 +1,10 @@
-import { pool } from "@/lib/db";
+import type { QueryClient } from "@/lib/db";
 
-export async function deleteRateSetData(rateSetId: string) {
-  await pool.query(
+export async function deleteRateSetData(
+  client: QueryClient,
+  rateSetId: string,
+) {
+  await client.query(
     `
     DELETE FROM rate_set_support_item_attribute
     WHERE support_item_id IN (
@@ -13,7 +16,7 @@ export async function deleteRateSetData(rateSetId: string) {
     [rateSetId],
   );
 
-  await pool.query(
+  await client.query(
     `
     DELETE FROM rate_set_support_item_price
     WHERE rate_set_id = $1
@@ -21,7 +24,7 @@ export async function deleteRateSetData(rateSetId: string) {
     [rateSetId],
   );
 
-  await pool.query(
+  await client.query(
     `
     DELETE FROM rate_set_support_item
     WHERE rate_set_id = $1
@@ -29,7 +32,7 @@ export async function deleteRateSetData(rateSetId: string) {
     [rateSetId],
   );
 
-  await pool.query(
+  await client.query(
     `
     DELETE FROM rate_set_category
     WHERE rate_set_id = $1

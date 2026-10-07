@@ -25,7 +25,7 @@ interface FormDrawerProps {
   open: boolean;
   setOpen: (open: boolean) => void;
   fields: Field[];
-  onSubmit: (values: any) => void;
+  onSubmit: (values: any) => void | Promise<void>;
   onUpload?: () => void;
   setFile?: (file: File) => void;
   showUpload?: boolean;
@@ -67,9 +67,13 @@ export default function FormDrawer({
     form.resetFields();
   };
 
-  const handleSubmit = (values: any) => {
-    onSubmit(values);
-    closeDrawer();
+  const handleSubmit = async (values: any) => {
+    try {
+      await onSubmit(values);
+      closeDrawer();
+    } catch (error) {
+      console.error(error);
+    }
   };
 
   return (

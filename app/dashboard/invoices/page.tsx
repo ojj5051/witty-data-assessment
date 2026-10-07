@@ -156,12 +156,14 @@ export default function InvoiceListPage() {
 
   const handleUpdateInvoice = async (invoiceData: any, id?: string) => {
     try {
+      if (!id) return;
+
       await editInvoice(id, invoiceData);
       loadInvoices();
       message.success("Invoice updated successfully");
     } catch (error: any) {
-      console.error(error.response.data.message);
-      message.error("Failed to update invoice");
+      message.error(error?.message || "Failed to update invoice");
+      throw error;
     }
   };
 
@@ -185,8 +187,8 @@ export default function InvoiceListPage() {
       loadInvoices();
       message.success("Invoice created successfully");
     } catch (error: any) {
-      console.error(error.response.data.message);
-      message.error("Failed to create invoice");
+      message.error(error?.message || "Failed to create invoice");
+      throw error;
     } finally {
       setLoading(false);
     }
@@ -344,8 +346,8 @@ export default function InvoiceListPage() {
                   value: "",
                 },
                 {
-                  label: "Drafted",
-                  value: "drafted",
+                  label: "Draft",
+                  value: "draft",
                 },
                 {
                   label: "Uploaded",

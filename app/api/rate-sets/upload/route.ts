@@ -1,22 +1,39 @@
 import { NextResponse } from "next/server";
-
+import { requireUser } from "@/lib/auth";
+import { pool, type QueryClient } from "@/lib/db";
 import { importCategories } from "./importCategories";
 import { importPrices } from "./importPrice";
 import { importSupportItems } from "./importSupportItems";
 import { parseExcel } from "./parseExcel";
 import { deleteRateSetData } from "./deleteRateSetsData";
-import { pool } from "@/lib/db";
+
+function importErrorMessage(error: unknown) {
+  if (error instanceof Error && !("code" in error)) {
+    return error.message;
+  }
+
+  return "Import failed";
+}
 
 export async function POST(request: Request) {
-  const client = await pool.connect();
+  const session = await requireUser();
+  if (session instanceof NextResponse) return session;
+
+  let client: (QueryClient & { release: () => void }) | null = null;
 
   try {
     const formData = await request.formData();
+    const rateSetId = formData.get("rate_set_id");
+    const file = formData.get("file");
 
-    const rateSetId = formData.get("rate_set_id") as string;
-    const file = formData.get("file") as File;
+    if (typeof rateSetId !== "string" || !rateSetId) {
+      return NextResponse.json(
+        { message: "Rate set is required." },
+        { status: 400 },
+      );
+    }
 
-    if (!file) {
+    if (!(file instanceof File)) {
       return NextResponse.json(
         { message: "No file uploaded." },
         { status: 400 },
@@ -25,9 +42,18 @@ export async function POST(request: Request) {
 
     const data = await parseExcel(file);
 
-    await client.query("BEGIN");
+    if (!Array.isArray(data) || data.length === 0) {
+      return NextResponse.json(
+        { message: "The Excel file has no rows to import." },
+        { status: 400 },
+      );
+    }
 
-    const existing = await pool.query(
+    const db = (await pool.connect()) as QueryClient & { release: () => void };
+    client = db;
+    await db.query("BEGIN");
+
+    const existing = await db.query(
       `
       SELECT id
       FROM rate_set_support_item
@@ -37,36 +63,39 @@ export async function POST(request: Request) {
       [rateSetId],
     );
 
-    if (existing.rowCount > 0) {
-      await deleteRateSetData(rateSetId);
+    if ((existing.rowCount ?? 0) > 0) {
+      await deleteRateSetData(db, rateSetId);
     }
-    
-    const categoryMap = await importCategories(rateSetId, data);
 
+    const rows = data as Record<string, unknown>[];
+    const categoryMap = await importCategories(db, rateSetId, rows);
     const supportItemMap = await importSupportItems(
+      db,
       rateSetId,
-      data,
+      rows,
       categoryMap,
     );
 
-    await importPrices(rateSetId, data, supportItemMap);
+    await importPrices(db, rateSetId, rows, supportItemMap);
 
-    await client.query("COMMIT");
+    await db.query("COMMIT");
 
     return NextResponse.json({
       message: "Import successful.",
       count: data.length,
     });
-  } catch (error: any) {
+  } catch (error) {
+    if (client) {
+      await client.query("ROLLBACK");
+    }
+
+    console.error(error);
+
     return NextResponse.json(
-      {
-        error: {
-          code: "VALIDATION_ERROR",
-          message: "One or more fields are invalid.",
-          details: [error.message],
-        },
-      },
+      { message: importErrorMessage(error) },
       { status: 400 },
     );
+  } finally {
+    client?.release();
   }
 }

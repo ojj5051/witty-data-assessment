@@ -1,28 +1,38 @@
 import { NextResponse } from "next/server";
+import { requireUser } from "@/lib/auth";
 import { pool } from "@/lib/db";
+import { InvoiceValidationError, prepareInvoice } from "@/lib/invoice";
 
 export async function PUT(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const session = await requireUser();
+  if (session instanceof NextResponse) return session;
+
+  const { id } = await params;
+  let body: unknown;
+
   try {
-    const { id } = await params;
+    body = await request.json();
+  } catch {
+    return NextResponse.json(
+      { message: "Invalid JSON body" },
+      { status: 400 },
+    );
+  }
 
-    const {
-      client_id,
-      provider_id,
-      invoice_number,
-      status,
-      invoice_date,
-      expected_amount,
-      amount,
-      items,
-    } = await request.json();
+  const client = await pool.connect();
 
-    const result = await pool.query(
+  try {
+    await client.query("BEGIN");
+
+    const invoice = await prepareInvoice(client, body);
+
+    const result = await client.query(
       `
       UPDATE invoice
-      SET 
+      SET
         client_id = $2,
         provider_id = $3,
         invoice_number = $4,
@@ -32,32 +42,32 @@ export async function PUT(
         amount = $8
       WHERE id = $1
       RETURNING id
-    `,
+      `,
       [
         id,
-        client_id,
-        provider_id,
-        invoice_number,
-        status,
-        invoice_date,
-        expected_amount,
-        amount,
+        invoice.client_id,
+        invoice.provider_id,
+        invoice.invoice_number,
+        invoice.status,
+        invoice.invoice_date,
+        invoice.expected_amount,
+        invoice.amount,
       ],
     );
 
-    const invoiceId = result.rows[0].id;
-
-    const client = await pool.connect();
+    if (result.rowCount === 0) {
+      throw new InvoiceValidationError("Invoice not found", 404);
+    }
 
     await client.query(
       `
-        DELETE FROM invoice_item
-        WHERE invoice_id = $1
-        `,
-      [invoiceId],
+      DELETE FROM invoice_item
+      WHERE invoice_id = $1
+      `,
+      [id],
     );
 
-    for (const item of items ?? []) {
+    for (const item of invoice.items) {
       await client.query(
         `
         INSERT INTO invoice_item (
@@ -75,7 +85,7 @@ export async function PUT(
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
         `,
         [
-          invoiceId,
+          id,
           item.rate_set_id,
           item.start_date,
           item.end_date,
@@ -89,23 +99,32 @@ export async function PUT(
       );
     }
 
-    return NextResponse.json(
-      {
-        message: "Provider edited successfully",
-        data: result.rows,
-      },
-      { status: 200 },
-    );
-  } catch (error: any) {
-    console.error(error);
+    await client.query("COMMIT");
 
     return NextResponse.json(
       {
-        message: error.message,
+        message: "Invoice updated successfully",
+        id,
       },
-      {
-        status: 500,
-      },
+      { status: 200 },
     );
+  } catch (error) {
+    await client.query("ROLLBACK");
+
+    if (error instanceof InvoiceValidationError) {
+      return NextResponse.json(
+        { message: error.message },
+        { status: error.status },
+      );
+    }
+
+    console.error(error);
+
+    return NextResponse.json(
+      { message: "Failed to update invoice" },
+      { status: 500 },
+    );
+  } finally {
+    client.release();
   }
 }
