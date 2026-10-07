@@ -1,7 +1,11 @@
 import { pool } from "@/lib/db";
 import { NextResponse } from "next/server";
+import { requireUser } from "@/lib/auth";
 
 export async function GET(request, { params }) {
+  const session = await requireUser();
+  if (session instanceof NextResponse) return session;
+
   try {
     const { id } = await params;
 

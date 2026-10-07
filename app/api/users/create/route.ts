@@ -1,8 +1,12 @@
 import argon2 from "argon2";
 import { pool } from "@/lib/db";
 import { NextResponse } from "next/server";
+import { requireUser } from "@/lib/auth";
 
 export async function POST(request: Request) {
+  const session = await requireUser();
+  if (session instanceof NextResponse) return session;
+
   const client = await pool.connect();
 
   try {

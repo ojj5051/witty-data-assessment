@@ -1,11 +1,15 @@
 import { NextResponse } from "next/server";
 import { pool } from "@/lib/db";
 import argon2 from "argon2";
+import { requireUser } from "@/lib/auth";
 
 export async function PUT(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const session = await requireUser();
+  if (session instanceof NextResponse) return session;
+
   try {
     const { id } = await params;
 

@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { pool } from "@/lib/db";
+import { requireUser } from "@/lib/auth";
 
 export async function DELETE(request: Request) {
+  const session = await requireUser();
+  if (session instanceof NextResponse) return session;
+
   const client = await pool.connect();
 
   try {
